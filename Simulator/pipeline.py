@@ -12,6 +12,8 @@ Run:
 import sys
 from dataclasses import dataclass, field
 from typing import List
+from Predictors.static import StaticAlwaysTakenPredictor
+
 
 # -----------------------------
 # Constants / opcode definitions
@@ -41,6 +43,8 @@ BIT_MASK_5  = 0x1F
 BIT_MASK_7  = 0x7F
 BIT_MASK_12 = 0xFFF
 BIT_MASK_20 = 0xFFFFF
+
+BRANCH_PREDICTOR = StaticAlwaysTakenPredictor()
 
 
 def u32(value: int) -> int:
@@ -83,6 +87,9 @@ class PipelineRegister:
     imm: int = 0
     ALUOutput: int = 0
     LMD: int = 0
+
+    predicted_taken: bool = False
+    predicted_pc: int = 0
 
 
 @dataclass
@@ -402,26 +409,55 @@ def EX() -> None:
         result = A + imm
 
     elif opcode == BRANCH_OPCODE:
-        take_branch = 0
+        #take_branch = 0
+        actual_taken = False
         if funct3 == 0x0:      # BEQ
-            take_branch = A == B
+            #take_branch = A == B
+            actual_taken = A == B
         elif funct3 == 0x1:    # BNE
-            take_branch = A != B
+            #take_branch = A != B
+            actual_taken = A != B
         elif funct3 == 0x4:    # BLT
-            take_branch = to_i32(A) < to_i32(B)
+            #take_branch = to_i32(A) < to_i32(B)
+            actual_taken = to_i32(A) < to_i32(B)
         elif funct3 == 0x5:    # BGE
-            take_branch = to_i32(A) >= to_i32(B)
+            #take_branch = to_i32(A) >= to_i32(B)
+            actual_taken = to_i32(A) >= to_i32(B)
 
-        if take_branch:
-            BRANCH_TARGET = ID_EX.PC + imm
-            CONTROL_FLUSH = 1
+        actual_target = ID_EX.PC + imm
 
-        CONTROL_STALL = 0
+        if(actual_taken):
+            correct_PC = actual_target
+        else:
+            correct_PC = ID_EX.PC + 4
+
+        BRANCH_PREDICTOR.update(ID_EX.PC, actual_taken, actual_target)
+
+        if(ID_EX.predicted_pc != correct_PC):
+            print(f"Branch misprediction at PC = 0x{ID_EX.PC:08x}")
+            NEXT_STATE.PC = correct_PC
+
+            IF_ID.IR = 0
+            ID_EX.IR = 0
+
+        # if take_branch:
+        #     BRANCH_TARGET = ID_EX.PC + imm
+        #     CONTROL_FLUSH = 1
+
+        #CONTROL_STALL = 0
 
     elif opcode == JUMP_OPCODE:
-        BRANCH_TARGET = ID_EX.PC + imm
-        CONTROL_FLUSH = 1
-        CONTROL_STALL = 0
+        # BRANCH_TARGET = ID_EX.PC + imm
+        # CONTROL_FLUSH = 1
+        # CONTROL_STALL = 0
+        actual_target = ID_EX.PC + imm
+        correct_PC = actual_target
+
+        if(ID_EX.predicted_pc != correct_PC):
+            NEXT_STATE.PC = correct_PC
+            IF_ID.IR = 0
+            ID_EX.IR = 0
+
 
     EX_MEM.ALUOutput = u32(result)
     EX_MEM.B = B
@@ -463,10 +499,10 @@ def ID() -> None:
         ID_EX.PC = 0
         return
 
-    if opcode in (BRANCH_OPCODE, JUMP_OPCODE):
-        if not CONTROL_STALL:
-            CONTROL_STALL = 1
-            print(f"Branch or Jump detected at PC = 0x{IF_ID.PC:08x}")
+    # if opcode in (BRANCH_OPCODE, JUMP_OPCODE):
+    #     if not CONTROL_STALL:
+    #         CONTROL_STALL = 1
+    #         print(f"Branch or Jump detected at PC = 0x{IF_ID.PC:08x}")
 
     imm = 0
     if opcode == R_OPCODE:
@@ -498,25 +534,69 @@ def ID() -> None:
     ID_EX.imm = imm
     ID_EX.IR = IF_ID.IR
     ID_EX.PC = IF_ID.PC
+    ID_EX.predicted_pc = IF_ID.predicted_pc
+    ID_EX.predicted_taken = IF_ID.predicted_taken
 
+
+# def IF() -> None:
+#     global CONTROL_FLUSH, CONTROL_STALL
+
+#     if CONTROL_FLUSH:
+#         NEXT_STATE.PC = BRANCH_TARGET
+#         CONTROL_FLUSH = 0
+#         CONTROL_STALL = 0
+#         IF_ID.IR = 0x00000000
+#         return
+
+#     if CONTROL_STALL:
+#         return
+
+#     instruction = mem_read_32(CURRENT_STATE.PC)
+#     IF_ID.IR = instruction
+#     IF_ID.PC = CURRENT_STATE.PC
+#     NEXT_STATE.PC = CURRENT_STATE.PC + 4
 
 def IF() -> None:
-    global CONTROL_FLUSH, CONTROL_STALL
-
-    if CONTROL_FLUSH:
-        NEXT_STATE.PC = BRANCH_TARGET
-        CONTROL_FLUSH = 0
-        CONTROL_STALL = 0
-        IF_ID.IR = 0x00000000
-        return
-
-    if CONTROL_STALL:
-        return
-
     instruction = mem_read_32(CURRENT_STATE.PC)
+    opcode = instruction & 0x7F
+
     IF_ID.IR = instruction
     IF_ID.PC = CURRENT_STATE.PC
-    NEXT_STATE.PC = CURRENT_STATE.PC + 4
+
+    predicted_taken = False
+    predicted_pc = CURRENT_STATE.PC + 4
+
+    if opcode == BRANCH_OPCODE:
+        predicted_taken = BRANCH_PREDICTOR.predict(CURRENT_STATE.PC)
+
+        imm_b = (
+            (((instruction >> 31) & 0x1) << 12) |
+            (((instruction >> 7) & 0x1) << 11) |
+            (((instruction >> 25) & 0x3F) << 5) |
+            (((instruction >> 8) & 0xF) << 1)
+        )
+        immm = sign_extend(imm_b, 13)
+
+        if predicted_taken:
+            predicted_pc = CURRENT_STATE.PC + imm_b
+
+    elif opcode == JUMP_OPCODE:
+        predicted_taken = True
+
+        imm_j = (
+            (((instruction >> 31) & 0x1) << 20) |
+            (((instruction >> 12) & 0xFF) << 12) |
+            (((instruction >> 20) & 0x1) << 11) |
+            (((instruction >> 21) & 0x3FF) << 1) 
+        )
+
+        imm = sign_extend(imm_j, 21)
+        predicted_pc = CURRENT_STATE.PC + imm
+
+    IF_ID.predicted_taken = predicted_taken
+    IF_ID.predicted_pc = predicted_pc
+
+    NEXT_STATE.PC = predicted_pc
 
 
 # -----------------------------
