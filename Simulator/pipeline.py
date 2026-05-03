@@ -433,12 +433,21 @@ def EX() -> None:
 
         BRANCH_PREDICTOR.update(ID_EX.PC, actual_taken, actual_target)
 
-        if(ID_EX.predicted_pc != correct_PC):
-            print(f"Branch misprediction at PC = 0x{ID_EX.PC:08x}")
-            NEXT_STATE.PC = correct_PC
+        # if(ID_EX.predicted_pc != correct_PC):
+        #     print(f"Branch misprediction at PC = 0x{ID_EX.PC:08x}")
+        #     NEXT_STATE.PC = correct_PC
+
+        if ID_EX.predicted_pc != correct_PC:
+            print(f"[MISPREDICT] PC=0x{ID_EX.PC:08x} | "
+            f"predicted=0x{ID_EX.predicted_pc:08x}, "
+            f"actual=0x{correct_PC:08x}")
 
             IF_ID.IR = 0
             ID_EX.IR = 0
+
+        print(f"[RESOLVE] PC=0x{ID_EX.PC:08x} -> "
+        f"{'TAKEN' if actual_taken else 'NOT TAKEN'} "
+        f"(correct PC=0x{correct_PC:08x})")
 
         # if take_branch:
         #     BRANCH_TARGET = ID_EX.PC + imm
@@ -597,6 +606,15 @@ def IF() -> None:
     IF_ID.predicted_pc = predicted_pc
 
     NEXT_STATE.PC = predicted_pc
+
+    if opcode == BRANCH_OPCODE:
+        print(f"[PREDICT] PC=0x{CURRENT_STATE.PC:08x} -> "
+          f"{'TAKEN' if predicted_taken else 'NOT TAKEN'} "
+          f"(next PC=0x{predicted_pc:08x})")
+    
+    elif opcode == JUMP_OPCODE:
+        print(f"[PREDICT] PC=0x{CURRENT_STATE.PC:08x} -> TAKEN (JUMP) "
+          f"(next PC=0x{predicted_pc:08x})")
 
 
 # -----------------------------
