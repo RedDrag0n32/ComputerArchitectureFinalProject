@@ -46,6 +46,7 @@ BIT_MASK_12 = 0xFFF
 BIT_MASK_20 = 0xFFFFF
 
 BRANCH_PREDICTOR = GsharePredictor(history_bits=10)
+#BRANCH_PREDICTOR = StaticAlwaysTakenPredictor()
 
 
 def u32(value: int) -> int:
