@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import List
 from Predictors.static import StaticAlwaysTakenPredictor
 from Predictors.gshare import GsharePredictor
+from Predictors.two_bit import TwoBitPredictor
 
 
 # -----------------------------
@@ -45,8 +46,9 @@ BIT_MASK_7  = 0x7F
 BIT_MASK_12 = 0xFFF
 BIT_MASK_20 = 0xFFFFF
 
-BRANCH_PREDICTOR = GsharePredictor(history_bits=10)
+#BRANCH_PREDICTOR = GsharePredictor(history_bits=10)
 #BRANCH_PREDICTOR = StaticAlwaysTakenPredictor()
+BRANCH_PREDICTOR = TwoBitPredictor()
 
 
 def u32(value: int) -> int:
