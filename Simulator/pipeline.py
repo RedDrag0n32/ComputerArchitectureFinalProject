@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import List
 from Predictors.static import StaticAlwaysTakenPredictor
+from Predictors.gshare import GsharePredictor
 
 
 # -----------------------------
@@ -44,7 +45,7 @@ BIT_MASK_7  = 0x7F
 BIT_MASK_12 = 0xFFF
 BIT_MASK_20 = 0xFFFFF
 
-BRANCH_PREDICTOR = StaticAlwaysTakenPredictor()
+BRANCH_PREDICTOR = GsharePredictor(history_bits=10)
 
 
 def u32(value: int) -> int:
@@ -318,6 +319,8 @@ def handle_pipeline() -> None:
     MEM()
     EX()
     ID()
+    # On load/use hazards we bubble decode; do not refetch/advance in the same
+    # cycle (this model keeps IF/ID stable while the hazard resolves).
     if not bubble:
         IF()
     bubble = False
@@ -327,6 +330,10 @@ def WB() -> None:
     global INSTRUCTION_COUNT
     opcode = MEM_WB.IR & 0x7F
     rd = (MEM_WB.IR >> 7) & 0x1F
+
+    # Nothing in WB this cycle.
+    if MEM_WB.IR == 0:
+        return
 
     if opcode in (R_OPCODE, IMM_ALU_OPCODE):
         if rd != 0:
@@ -338,11 +345,18 @@ def WB() -> None:
         pass
 
     INSTRUCTION_COUNT += 1
+    # Don't clear MEM_WB here: ID() runs later in the same cycle and
+    # relies on MEM_WB.IR for hazard detection in this simulator ordering.
 
 
 def MEM() -> None:
     opcode = EX_MEM.IR & 0x7F
     funct3 = (EX_MEM.IR >> 12) & 0x7
+
+    # Nothing in MEM this cycle.
+    if EX_MEM.IR == 0:
+        MEM_WB.IR = 0
+        return
 
     address = EX_MEM.ALUOutput
     write_data = EX_MEM.B
@@ -359,6 +373,8 @@ def MEM() -> None:
     MEM_WB.LMD = read_data
     MEM_WB.IR = EX_MEM.IR
     MEM_WB.PC = EX_MEM.PC
+    # Don't clear EX_MEM here: ID() runs later in the same cycle and
+    # relies on EX_MEM.IR for hazard detection in this simulator ordering.
 
 
 def EX() -> None:
@@ -367,6 +383,11 @@ def EX() -> None:
     opcode = ID_EX.IR & 0x7F
     funct3 = (ID_EX.IR >> 12) & 0x7
     funct7 = (ID_EX.IR >> 25) & 0x7F
+
+    # Nothing in EX this cycle.
+    if ID_EX.IR == 0:
+        EX_MEM.IR = 0
+        return
 
     A = ID_EX.A
     B = ID_EX.B
@@ -463,6 +484,7 @@ def EX() -> None:
     EX_MEM.B = B
     EX_MEM.IR = ID_EX.IR
     EX_MEM.PC = ID_EX.PC
+    # Leave ID_EX as-is; it will be overwritten next cycle (or cleared on bubble/flush).
 
 
 def ID() -> None:
@@ -480,8 +502,13 @@ def ID() -> None:
     B = CURRENT_STATE.REGS[rs2]
 
     hazard_detected = 0
+    idex_rd = (ID_EX.IR >> 7) & 0x1F
     exmem_rd = (EX_MEM.IR >> 7) & 0x1F
     memwb_rd = (MEM_WB.IR >> 7) & 0x1F
+
+    # Without forwarding, we must also stall on values still in ID/EX.
+    if writes_to_reg(ID_EX.IR) and idex_rd != 0 and (idex_rd == rs1 or idex_rd == rs2):
+        hazard_detected = 1
 
     if writes_to_reg(EX_MEM.IR) and exmem_rd != 0 and (exmem_rd == rs1 or exmem_rd == rs2):
         hazard_detected = 1
@@ -575,10 +602,10 @@ def IF() -> None:
             (((instruction >> 25) & 0x3F) << 5) |
             (((instruction >> 8) & 0xF) << 1)
         )
-        immm = sign_extend(imm_b, 13)
+        imm = sign_extend(imm_b, 13)
 
         if predicted_taken:
-            predicted_pc = CURRENT_STATE.PC + imm_b
+            predicted_pc = CURRENT_STATE.PC + imm
 
     elif opcode == JUMP_OPCODE:
         predicted_taken = True
