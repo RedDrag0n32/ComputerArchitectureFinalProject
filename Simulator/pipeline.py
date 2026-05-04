@@ -50,6 +50,10 @@ BIT_MASK_20 = 0xFFFFF
 #BRANCH_PREDICTOR = StaticAlwaysTakenPredictor()
 BRANCH_PREDICTOR = TwoBitPredictor()
 
+# btb_target = btb.access(pc)
+
+# btb.access(pc, update=True, target=actual_target)
+
 
 def u32(value: int) -> int:
     """Force a value into unsigned 32-bit range."""
