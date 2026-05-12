@@ -15,6 +15,7 @@ from typing import List
 from Predictors.static import StaticAlwaysTakenPredictor
 from Predictors.gshare import GsharePredictor
 from Predictors.two_bit import TwoBitPredictor
+from Predictors.btb import BTB
 
 
 # -----------------------------
@@ -49,6 +50,7 @@ BIT_MASK_20 = 0xFFFFF
 #BRANCH_PREDICTOR = GsharePredictor(history_bits=10)
 #BRANCH_PREDICTOR = StaticAlwaysTakenPredictor()
 BRANCH_PREDICTOR = TwoBitPredictor()
+BRANCH_TARGET_BUFFER = BTB(num_entries=256)
 
 # btb_target = btb.access(pc)
 
@@ -98,6 +100,7 @@ class PipelineRegister:
 
     predicted_taken: bool = False
     predicted_pc: int = 0
+    btb_hit: bool = False
 
 
 @dataclass
@@ -453,29 +456,39 @@ def EX() -> None:
             actual_taken = to_i32(A) >= to_i32(B)
 
         actual_target = ID_EX.PC + imm
-
-        if(actual_taken):
-            correct_PC = actual_target
-        else:
-            correct_PC = ID_EX.PC + 4
+        correct_PC = actual_target if actual_taken else ID_EX.PC + 4
 
         BRANCH_PREDICTOR.update(ID_EX.PC, actual_taken, actual_target)
 
-        # if(ID_EX.predicted_pc != correct_PC):
-        #     print(f"Branch misprediction at PC = 0x{ID_EX.PC:08x}")
-        #     NEXT_STATE.PC = correct_PC
+
+        if(actual_taken):
+            BRANCH_TARGET_BUFFER.update(ID_EX.PC, actual_target)
+
+        print(f"[RESOLVE] PC=0x{ID_EX.PC:08x} -> "
+          f"{'TAKEN' if actual_taken else 'NOT TAKEN'} | "
+          f"target=0x{actual_target:08x} | "
+          f"correct PC=0x{correct_PC:08x}")
 
         if ID_EX.predicted_pc != correct_PC:
             print(f"[MISPREDICT] PC=0x{ID_EX.PC:08x} | "
-            f"predicted=0x{ID_EX.predicted_pc:08x}, "
-            f"actual=0x{correct_PC:08x}")
+                f"predicted=0x{ID_EX.predicted_pc:08x}, "
+                f"actual=0x{correct_PC:08x}")
+            
+            NEXT_STATE.PC = correct_PC
 
             IF_ID.IR = 0
+            IF_ID.predicted_taken = False
+            IF_ID.predicted_pc = 0
+            IF_ID.btb_hit = False
+            
             ID_EX.IR = 0
+            ID_EX.predicted_taken = False
+            ID_EX.predicted_pc = 0
+            ID_EX.btb_hit = False
 
-        print(f"[RESOLVE] PC=0x{ID_EX.PC:08x} -> "
-        f"{'TAKEN' if actual_taken else 'NOT TAKEN'} "
-        f"(correct PC=0x{correct_PC:08x})")
+        # print(f"[RESOLVE] PC=0x{ID_EX.PC:08x} -> "
+        # f"{'TAKEN' if actual_taken else 'NOT TAKEN'} "
+        # f"(correct PC=0x{correct_PC:08x})")
 
         # if take_branch:
         #     BRANCH_TARGET = ID_EX.PC + imm
@@ -579,6 +592,7 @@ def ID() -> None:
     ID_EX.PC = IF_ID.PC
     ID_EX.predicted_pc = IF_ID.predicted_pc
     ID_EX.predicted_taken = IF_ID.predicted_taken
+    ID_EX.btb_hit = IF_ID.btb_hit
 
 
 # def IF() -> None:
@@ -608,47 +622,71 @@ def IF() -> None:
 
     predicted_taken = False
     predicted_pc = CURRENT_STATE.PC + 4
+    btb_hit = False
 
     if opcode == BRANCH_OPCODE:
         predicted_taken = BRANCH_PREDICTOR.predict(CURRENT_STATE.PC)
 
-        imm_b = (
-            (((instruction >> 31) & 0x1) << 12) |
-            (((instruction >> 7) & 0x1) << 11) |
-            (((instruction >> 25) & 0x3F) << 5) |
-            (((instruction >> 8) & 0xF) << 1)
-        )
-        imm = sign_extend(imm_b, 13)
+        btb_target = BRANCH_TARGET_BUFFER.lookup(CURRENT_STATE.PC)
 
-        if predicted_taken:
-            predicted_pc = CURRENT_STATE.PC + imm
+        # imm_b = (
+        #     (((instruction >> 31) & 0x1) << 12) |
+        #     (((instruction >> 7) & 0x1) << 11) |
+        #     (((instruction >> 25) & 0x3F) << 5) |
+        #     (((instruction >> 8) & 0xF) << 1)
+        # )
+        # imm = sign_extend(imm_b, 13)
+
+        if predicted_taken and btb_target is not None:
+            predicted_pc = btb_target
+            btb_hit = True
+            #predicted_pc = CURRENT_STATE.PC + imm
+        else:
+            predicted_pc = CURRENT_STATE.PC + 4
+
+        print(f"[PREDICT] PC=0x{CURRENT_STATE.PC:08x} -> "
+            f"{'TAKEN' if predicted_taken else 'NOT TAKEN'} | "
+            f"BTB {'HIT' if btb_hit else 'MISS'} | "
+            f"next PC=0x{predicted_pc:08x}")
 
     elif opcode == JUMP_OPCODE:
         predicted_taken = True
+        btb_target = BRANCH_TARGET_BUFFER.lookup(CURRENT_STATE.PC)
 
-        imm_j = (
-            (((instruction >> 31) & 0x1) << 20) |
-            (((instruction >> 12) & 0xFF) << 12) |
-            (((instruction >> 20) & 0x1) << 11) |
-            (((instruction >> 21) & 0x3FF) << 1) 
-        )
+        if btb_target is not None:
+            predicted_pc = btb_target
+            btb_hit = True
+        else:
+            predicted_pc = CURRENT_STATE.PC + 4
 
-        imm = sign_extend(imm_j, 21)
-        predicted_pc = CURRENT_STATE.PC + imm
+        print(f"[PREDICT] PC=0x{CURRENT_STATE.PC:08x} -> TAKEN JUMP | "
+            f"BTB {'HIT' if btb_hit else 'MISS'} | "
+            f"next PC=0x{predicted_pc:08x}")
+
+        # imm_j = (
+        #     (((instruction >> 31) & 0x1) << 20) |
+        #     (((instruction >> 12) & 0xFF) << 12) |
+        #     (((instruction >> 20) & 0x1) << 11) |
+        #     (((instruction >> 21) & 0x3FF) << 1) 
+        # )
+
+        #imm = sign_extend(imm_j, 21)
+        #predicted_pc = CURRENT_STATE.PC + imm
 
     IF_ID.predicted_taken = predicted_taken
     IF_ID.predicted_pc = predicted_pc
+    IF_ID.btb_hit = btb_hit
 
     NEXT_STATE.PC = predicted_pc
 
-    if opcode == BRANCH_OPCODE:
-        print(f"[PREDICT] PC=0x{CURRENT_STATE.PC:08x} -> "
-          f"{'TAKEN' if predicted_taken else 'NOT TAKEN'} "
-          f"(next PC=0x{predicted_pc:08x})")
+    # if opcode == BRANCH_OPCODE:
+    #     print(f"[PREDICT] PC=0x{CURRENT_STATE.PC:08x} -> "
+    #       f"{'TAKEN' if predicted_taken else 'NOT TAKEN'} "
+    #       f"(next PC=0x{predicted_pc:08x})")
     
-    elif opcode == JUMP_OPCODE:
-        print(f"[PREDICT] PC=0x{CURRENT_STATE.PC:08x} -> TAKEN (JUMP) "
-          f"(next PC=0x{predicted_pc:08x})")
+    # elif opcode == JUMP_OPCODE:
+    #     print(f"[PREDICT] PC=0x{CURRENT_STATE.PC:08x} -> TAKEN (JUMP) "
+    #       f"(next PC=0x{predicted_pc:08x})")
 
 
 # -----------------------------
