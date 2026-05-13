@@ -16,6 +16,7 @@ from Predictors.static import StaticAlwaysTakenPredictor
 from Predictors.gshare import GsharePredictor
 from Predictors.two_bit import TwoBitPredictor
 from Predictors.btb import BTB
+from stats import StatsCollector
 
 
 # -----------------------------
@@ -51,6 +52,7 @@ BIT_MASK_20 = 0xFFFFF
 #BRANCH_PREDICTOR = StaticAlwaysTakenPredictor()
 BRANCH_PREDICTOR = TwoBitPredictor()
 BRANCH_TARGET_BUFFER = BTB(num_entries=256)
+STATS = StatsCollector()
 
 # btb_target = btb.access(pc)
 
@@ -159,6 +161,7 @@ def help_menu() -> None:
     print("low <val>\t-- set the LO register to <val>")
     print("print\t-- print the program loaded into memory")
     print("show\t-- print the current content of the pipeline registers")
+    print("stats\t-- show the stats of the current program loaded")
     print("f [0 | 1]\t-- Enable/disable forwarding.")
     print("?\t-- display help menu")
     print("quit\t-- exit the simulator\n")
@@ -268,6 +271,8 @@ def reset() -> None:
     global CURRENT_STATE, NEXT_STATE, RUN_FLAG, INSTRUCTION_COUNT
     global IF_ID, ID_EX, EX_MEM, MEM_WB
     global bubble, CONTROL_STALL, CONTROL_FLUSH, BRANCH_TARGET
+    global STATS
+    STATS = StatsCollector()
 
     CURRENT_STATE = CPUState(PC=MEM_TEXT_BEGIN)
     NEXT_STATE = CURRENT_STATE.copy()
@@ -458,6 +463,8 @@ def EX() -> None:
         actual_target = ID_EX.PC + imm
         correct_PC = actual_target if actual_taken else ID_EX.PC + 4
 
+        STATS.record_branch(ID_EX.predicted_pc, correct_PC)
+
         BRANCH_PREDICTOR.update(ID_EX.PC, actual_taken, actual_target)
 
 
@@ -502,6 +509,8 @@ def EX() -> None:
         # CONTROL_STALL = 0
         actual_target = ID_EX.PC + imm
         correct_PC = actual_target
+
+        STATS.record_jump(ID_EX.predicted_pc, correct_PC)
 
         BRANCH_TARGET_BUFFER.update(ID_EX.PC, actual_target)
 
@@ -633,7 +642,7 @@ def IF() -> None:
     if(instruction == 0):
         return 
     
-    
+
     opcode = instruction & 0x7F
 
     IF_ID.IR = instruction
@@ -667,6 +676,7 @@ def IF() -> None:
             f"{'TAKEN' if predicted_taken else 'NOT TAKEN'} | "
             f"BTB {'HIT' if btb_hit else 'MISS'} | "
             f"next PC=0x{predicted_pc:08x}")
+        STATS.record_btb_access(btb_hit)
 
     elif opcode == JUMP_OPCODE:
         predicted_taken = True
@@ -681,6 +691,8 @@ def IF() -> None:
         print(f"[PREDICT] PC=0x{CURRENT_STATE.PC:08x} -> TAKEN JUMP | "
             f"BTB {'HIT' if btb_hit else 'MISS'} | "
             f"next PC=0x{predicted_pc:08x}")
+        
+        STATS.record_btb_access(btb_hit)
 
         # imm_j = (
         #     (((instruction >> 31) & 0x1) << 20) |
@@ -968,6 +980,12 @@ def handle_command() -> None:
         elif command in ("f", "forwarding"):
             ENABLE_FORWARDING = int(parts[1])
             print("Forwarding OFF" if ENABLE_FORWARDING == 0 else "Forwarding ON")
+        elif command in ("stats", "stat"):
+            storage_bits = (
+                BRANCH_PREDICTOR.storage_bits() + BRANCH_TARGET_BUFFER.storage_bits() )
+            STATS.print_summary(storage_bits, CYCLE_COUNT, INSTRUCTION_COUNT)
+            
+
         else:
             print("Invalid Command.")
     except (IndexError, ValueError):

@@ -66,7 +66,7 @@ class StatsCollector:
             return 0
         return (cycle_count + self.PENALTY_CYCLES) / instruction_count
     
-    def print_summary(self, predictor, btb, cycle_count, instruction_count):
+    def print_summary(self, storage_bits, cycle_count, instruction_count):
         print("--------- Simulator Statistics ---------")
         print(f"Total Branches: {self.TOTAL_BRANCHES}")
         print(f"Correct Predictions: {self.CORRECT_PREDICTIONS}")
@@ -78,7 +78,7 @@ class StatsCollector:
         print(f"BTB Hit Rate: {self.btb_hit_rate() * 100:.2f}%")
         print(f"CPI: {self.cpi(cycle_count, instruction_count):.4f}")
         print(f"Actual CPI: {self.actual_cpi(cycle_count, instruction_count):.4f}")
-        print(f"Storage Bits: {predictor.storage_bits() + btb.storage_bits()}")
+        print(f"Storage Bits: {storage_bits}")
         
 
     
