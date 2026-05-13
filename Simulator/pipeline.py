@@ -503,10 +503,24 @@ def EX() -> None:
         actual_target = ID_EX.PC + imm
         correct_PC = actual_target
 
+        BRANCH_TARGET_BUFFER.update(ID_EX.PC, actual_target)
+
         if(ID_EX.predicted_pc != correct_PC):
+            print(f"[JUMP REDIRECT] PC=0x{ID_EX.PC:08x} | "
+              f"predicted=0x{ID_EX.predicted_pc:08x}, "
+              f"actual=0x{correct_PC:08x}")
+            
             NEXT_STATE.PC = correct_PC
+
             IF_ID.IR = 0
+            IF_ID.predicted_taken = False
+            IF_ID.predicted_pc = 0
+            IF_ID.btb_hit = False
+
             ID_EX.IR = 0
+            ID_EX.predicted_taken = False
+            ID_EX.predicted_pc = 0
+            ID_EX.btb_hit = False
 
 
     EX_MEM.ALUOutput = u32(result)
@@ -615,6 +629,11 @@ def ID() -> None:
 
 def IF() -> None:
     instruction = mem_read_32(CURRENT_STATE.PC)
+
+    if(instruction == 0):
+        return 
+    
+    
     opcode = instruction & 0x7F
 
     IF_ID.IR = instruction
