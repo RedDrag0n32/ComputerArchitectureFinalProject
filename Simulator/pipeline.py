@@ -49,9 +49,9 @@ BIT_MASK_7  = 0x7F
 BIT_MASK_12 = 0xFFF
 BIT_MASK_20 = 0xFFFFF
 
-#BRANCH_PREDICTOR = GsharePredictor(history_bits=10)
+BRANCH_PREDICTOR = GsharePredictor(history_bits=16)
 #BRANCH_PREDICTOR = StaticAlwaysTakenPredictor()
-BRANCH_PREDICTOR = TwoBitPredictor(table_bits=10)
+#BRANCH_PREDICTOR = TwoBitPredictor()
 BRANCH_TARGET_BUFFER = BTB(num_entries=256)
 STATS = StatsCollector()
 

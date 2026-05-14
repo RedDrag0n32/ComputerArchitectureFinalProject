@@ -153,12 +153,48 @@ def plot_storage_vs_accuracy(csv_file="TwoBitStorageExperiment.csv"):
     plt.savefig("fig3_storage_vs_accuracy.png", dpi=300)
     plt.show()
 
+def plot_gshare_history_vs_accuracy(csv_file="GShareHistoryBits.csv"):
+    file = pd.read_csv(csv_file)
+
+    file["history_bits"] = file["history_bits"].astype(int)
+    file["accuracy"] = file["accuracy"].apply(clean_percent)
+
+    plt.figure(figsize=(8, 5))
+
+    for workload in file["workload"].unique():
+        subset = file[file["workload"] == workload].sort_values("history_bits")
+
+        plt.plot(
+            subset["history_bits"],
+            subset["accuracy"],
+            marker="o",
+            label=workload
+        )
+
+    plt.annotate(
+        "Sweet spot: H=6",
+        xy=(6, 77.27),
+        xytext=(8, 70),
+        arrowprops=dict(arrowstyle="->")
+    )
+
+    plt.xlabel("Gshare History Length (bits)")
+    plt.ylabel("Prediction Accuracy (%)")
+    plt.title("Gshare History Length vs. Accuracy")
+    plt.xticks([1, 2, 4, 6, 8, 10, 12, 14, 16])
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("fig4_gshare_history.png", dpi=300)
+    plt.show()
+
 def main():
     file = load_results("results.csv")
 
     plot_accuracy_bar(file)
     plot_cpi_bar(file)
     plot_storage_vs_accuracy()
+    plot_gshare_history_vs_accuracy()
     plot_performance_per_bit(file)
     plot_btb_hit_rate()
 
