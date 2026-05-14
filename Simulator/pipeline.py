@@ -41,6 +41,7 @@ LOAD_OPCODE    = 0x03
 STORE_OPCODE   = 0x23
 BRANCH_OPCODE  = 0x63
 JUMP_OPCODE    = 0x6F
+JALR_OPCODE    = 0x67
 
 BIT_MASK_3  = 0x7
 BIT_MASK_5  = 0x1F
@@ -143,6 +144,7 @@ bubble = False
 CONTROL_STALL = 0
 CONTROL_FLUSH = 0
 BRANCH_TARGET = 0
+FLUSH_PIPELINE = False
 
 
 # -----------------------------
@@ -200,7 +202,7 @@ def mem_write_32(address: int, value: int) -> None:
 
 def writes_to_reg(ir: int) -> int:
     opcode = ir & 0x7F
-    return 1 if opcode in (R_OPCODE, IMM_ALU_OPCODE, LOAD_OPCODE) else 0
+    return 1 if opcode in (R_OPCODE, IMM_ALU_OPCODE, LOAD_OPCODE, JUMP_OPCODE, JALR_OPCODE) else 0
 
 
 # -----------------------------
@@ -277,6 +279,9 @@ def reset() -> None:
     CURRENT_STATE = CPUState(PC=MEM_TEXT_BEGIN)
     NEXT_STATE = CURRENT_STATE.copy()
 
+    CURRENT_STATE.REGS[2] = CURRENT_STATE.REGS[2] = 0x7FFFFFF0
+    NEXT_STATE = CURRENT_STATE.copy()
+
     for region in MEM_REGIONS:
         region.mem[:] = b"\x00" * len(region.mem)
 
@@ -329,15 +334,19 @@ def load_program() -> None:
 # Pipeline
 # -----------------------------
 def handle_pipeline() -> None:
-    global bubble
+    global bubble, FLUSH_PIPELINE
+
+    FLUSH_PIPELINE = False
     WB()
     MEM()
     EX()
-    ID()
+
+    if not FLUSH_PIPELINE:
+        ID()
     # On load/use hazards we bubble decode; do not refetch/advance in the same
     # cycle (this model keeps IF/ID stable while the hazard resolves).
-    if not bubble:
-        IF()
+        if not bubble:
+            IF()
     bubble = False
 
 
@@ -350,7 +359,7 @@ def WB() -> None:
     if MEM_WB.IR == 0:
         return
 
-    if opcode in (R_OPCODE, IMM_ALU_OPCODE):
+    if opcode in (R_OPCODE, IMM_ALU_OPCODE, JUMP_OPCODE, JALR_OPCODE):
         if rd != 0:
             NEXT_STATE.REGS[rd] = u32(MEM_WB.ALUOutput)
     elif opcode == LOAD_OPCODE:
@@ -360,6 +369,7 @@ def WB() -> None:
         pass
 
     INSTRUCTION_COUNT += 1
+    MEM_WB.IR = 0
     # Don't clear MEM_WB here: ID() runs later in the same cycle and
     # relies on MEM_WB.IR for hazard detection in this simulator ordering.
 
@@ -388,14 +398,19 @@ def MEM() -> None:
     MEM_WB.LMD = read_data
     MEM_WB.IR = EX_MEM.IR
     MEM_WB.PC = EX_MEM.PC
+
+    EX_MEM.IR = 0
     # Don't clear EX_MEM here: ID() runs later in the same cycle and
     # relies on EX_MEM.IR for hazard detection in this simulator ordering.
 
 
 def EX() -> None:
-    global BRANCH_TARGET, CONTROL_FLUSH, CONTROL_STALL
+    global BRANCH_TARGET, CONTROL_FLUSH, CONTROL_STALL, FLUSH_PIPELINE
 
     opcode = ID_EX.IR & 0x7F
+    if(ID_EX.IR != 0):
+        print(f"[EX] PC=0x{ID_EX.PC:08x} IR=0x{ID_EX.IR:08x} opcode=0x{opcode:02x}")
+
     funct3 = (ID_EX.IR >> 12) & 0x7
     funct7 = (ID_EX.IR >> 25) & 0x7F
 
@@ -463,7 +478,7 @@ def EX() -> None:
         actual_target = ID_EX.PC + imm
         correct_PC = actual_target if actual_taken else ID_EX.PC + 4
 
-        STATS.record_branch(ID_EX.predicted_pc, correct_PC)
+        STATS.record_branch(ID_EX.predicted_taken, actual_taken)
 
         BRANCH_PREDICTOR.update(ID_EX.PC, actual_taken, actual_target)
 
@@ -483,15 +498,17 @@ def EX() -> None:
             
             NEXT_STATE.PC = correct_PC
 
+            FLUSH_PIPELINE = True
+
             IF_ID.IR = 0
             IF_ID.predicted_taken = False
             IF_ID.predicted_pc = 0
             IF_ID.btb_hit = False
             
-            ID_EX.IR = 0
-            ID_EX.predicted_taken = False
-            ID_EX.predicted_pc = 0
-            ID_EX.btb_hit = False
+            # ID_EX.IR = 0
+            # ID_EX.predicted_taken = False
+            # ID_EX.predicted_pc = 0
+            # ID_EX.btb_hit = False
 
         # print(f"[RESOLVE] PC=0x{ID_EX.PC:08x} -> "
         # f"{'TAKEN' if actual_taken else 'NOT TAKEN'} "
@@ -510,9 +527,11 @@ def EX() -> None:
         actual_target = ID_EX.PC + imm
         correct_PC = actual_target
 
-        STATS.record_jump(ID_EX.predicted_pc, correct_PC)
+        result = ID_EX.PC + 4
 
         BRANCH_TARGET_BUFFER.update(ID_EX.PC, actual_target)
+        STATS.record_jump(ID_EX.predicted_pc, correct_PC)
+
 
         if(ID_EX.predicted_pc != correct_PC):
             print(f"[JUMP REDIRECT] PC=0x{ID_EX.PC:08x} | "
@@ -520,22 +539,47 @@ def EX() -> None:
               f"actual=0x{correct_PC:08x}")
             
             NEXT_STATE.PC = correct_PC
+            FLUSH_PIPELINE = True
 
             IF_ID.IR = 0
             IF_ID.predicted_taken = False
             IF_ID.predicted_pc = 0
             IF_ID.btb_hit = False
 
-            ID_EX.IR = 0
-            ID_EX.predicted_taken = False
-            ID_EX.predicted_pc = 0
-            ID_EX.btb_hit = False
+            # ID_EX.IR = 0
+            # ID_EX.predicted_taken = False
+            # ID_EX.predicted_pc = 0
+            # ID_EX.btb_hit = False
+    elif opcode == JALR_OPCODE:
+        actual_target = (A + imm) & ~1
+        correct_PC = actual_target
+
+        result = ID_EX.PC + 4
+
+        BRANCH_TARGET_BUFFER.update(ID_EX.PC, actual_target)
+
+        STATS.record_jump(ID_EX.predicted_pc, correct_PC)
+
+        if ID_EX.predicted_pc != correct_PC:
+            NEXT_STATE.PC = correct_PC
+            FLUSH_PIPELINE = True
+            IF_ID.IR = 0
+            IF_ID.predicted_taken = False
+            IF_ID.predicted_pc = 0
+            IF_ID.btb_hit = False
+
+            # ID_EX.IR = 0
+            # ID_EX.predicted_taken = False
+            # ID_EX.predicted_pc = 0
+            # ID_EX.btb_hit = False
 
 
     EX_MEM.ALUOutput = u32(result)
     EX_MEM.B = B
     EX_MEM.IR = ID_EX.IR
     EX_MEM.PC = ID_EX.PC
+
+    ID_EX.IR = 0
     # Leave ID_EX as-is; it will be overwritten next cycle (or cleared on bubble/flush).
 
 
@@ -571,11 +615,15 @@ def ID() -> None:
     if hazard_detected:
         print(f"Hazard detected at PC = 0x{IF_ID.PC:08x}")
         bubble = True
+        print(f"[ID] PC=0x{IF_ID.PC:08x} IR=0x{IF_ID.IR:08x} opcode=0x{opcode:02x}")
         ID_EX.IR = 0
         ID_EX.A = 0
         ID_EX.B = 0
         ID_EX.imm = 0
         ID_EX.PC = 0
+        ID_EX.predicted_pc = 0
+        ID_EX.predicted_taken = False
+        ID_EX.btb_hit = False
         return
 
     # if opcode in (BRANCH_OPCODE, JUMP_OPCODE):
@@ -586,7 +634,7 @@ def ID() -> None:
     imm = 0
     if opcode == R_OPCODE:
         imm = 0
-    elif opcode in (IMM_ALU_OPCODE, LOAD_OPCODE):
+    elif opcode in (IMM_ALU_OPCODE, LOAD_OPCODE, JALR_OPCODE):
         imm = sign_extend((IF_ID.IR >> 20) & 0xFFF, 12)
     elif opcode == STORE_OPCODE:
         imm_s = (((IF_ID.IR >> 25) & 0x7F) << 5) | ((IF_ID.IR >> 7) & 0x1F)
@@ -607,6 +655,7 @@ def ID() -> None:
             (((IF_ID.IR >> 21) & 0x3FF) << 1)
         )
         imm = sign_extend(imm_j, 21)
+
 
     ID_EX.A = A
     ID_EX.B = B
@@ -678,7 +727,7 @@ def IF() -> None:
             f"next PC=0x{predicted_pc:08x}")
         STATS.record_btb_access(btb_hit)
 
-    elif opcode == JUMP_OPCODE:
+    elif opcode in (JUMP_OPCODE, JALR_OPCODE):
         predicted_taken = True
         btb_target = BRANCH_TARGET_BUFFER.lookup(CURRENT_STATE.PC)
 
@@ -745,6 +794,8 @@ def print_command(bincmd: int) -> None:
             handle_b_print(bincmd)
         elif opcode == JUMP_OPCODE:
             handle_j_print(bincmd)
+        elif opcode == JALR_OPCODE:
+            print("jalr", end="")
         else:
             print("Unknown command!", end="")
 

@@ -1,0 +1,10 @@
+workload,predictor,accuracy,cpi,actual_cpi,storage_bits,btb_hit_rate,performance_per_bit
+bubble_sort, static, 45.45%, 2.0408, 2.2177, 14080, 56.25%, N/A (Baseline)
+bubble_sort, gshare, 68.18%, 2.0408, 2.1497, 16138, 56.25%, .00141 %/bit
+bubble_sort, twobit, 90.91%, 2.0408, 2.0816, 16128, 56.25%, .00282 %/bit
+recursive_fibonacci, static, 15.38%, 2.8846, 3.2115, 14080, 43.33%, N/A (Baseline)
+recursive_fibonacci, gshare, 84.62%, 2.8846, 3.0385, 16138, 43.33%, .00429 %/bit
+recursive_fibonacci, twobit, 76.92%, 2.8846, 3.0577, 16128, 40.00%, .00382 %/bit
+matrix_multiplication, static, 41.18%, 2.1429, 2.3143, 14080, 54.17%, N/A (Baseline)
+matrix_multiplication, gshare, 41.18%, 2.1429, 2.3143, 16138, 54.17%, 0 %/bit
+matrix_multiplication, twobit, 64.71%, 2.1429, 2.2571, 16128, 41.67%, .00146 %/bit

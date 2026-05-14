@@ -17,10 +17,10 @@ class StatsCollector:
         self.BTB_HITS = 0
         self.BTB_MISSES = 0
 
-    def record_branch(self, predicted_pc, correct_pc):
+    def record_branch(self, predicted_taken, actual_taken):
         self.TOTAL_BRANCHES += 1
 
-        if predicted_pc == correct_pc:
+        if predicted_taken == actual_taken:
             self.CORRECT_PREDICTIONS += 1
         else:
             self.MISPREDICTIONS += 1
